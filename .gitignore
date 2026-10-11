@@ -1,38 +1,54 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# See https://help.github.com/articles/ignoring-files/
 
 # Dependencies
-node_modules
+node_modules/
 .pnp
 .pnp.js
 
-# Local env files
+# Environment variables and secrets
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+!.env.template
 
 # Testing
-coverage
+coverage/
 
-# Turbo
-.turbo
+# Turborepo
+.turbo/
 
 # Vercel
-.vercel
+.vercel/
 
-# Build Outputs
+# Build outputs
 .next/
 out/
-build
-dist
+build/
+dist/
 
+# Generated Prisma client
+packages/db/generated/
 
-# Debug
+# Debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Misc
+# TypeScript
+*.tsbuildinfo
+
+# Miscellaneous
 .DS_Store
+Thumbs.db
+desktop.ini
 *.pem
+*.key
+*.p12
+
+# IDE files
+.idea/
+
+# Temporary files
+tmp/
+temp/

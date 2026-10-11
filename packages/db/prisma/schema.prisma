@@ -1,0 +1,149 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+enum UserRole {
+  CUSTOMER
+  AGENT
+}
+
+enum ConversationStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+enum MemberRole {
+  CUSTOMER
+  AGENT
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  SYSTEM
+}
+model User{
+  id String @id @default(uuid())
+  name String
+  email String @unique
+  password String
+  role UserRole @default(CUSTOMER)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversationCreated Conversation[] @relation("ConversationCreator")
+  conversationsAssigned Conversation[] @relation("ConversationAssignee")
+  memberships ConversationMember[]
+  messages Message[]
+  messageReads MessageRead[]
+  sessions Session[]
+}
+
+model Conversation{
+  id String @id @default(uuid())
+  title String?
+  status ConversationStatus @default(OPEN)
+  createdById String
+  assignedToId String? 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  resolvedAt DateTime?
+
+  createdBy User  @relation("ConversationCreator", fields: [createdById],references: [id])
+  assignedTo User? @relation("ConversationAssignee", fields: [assignedToId], references: [id])
+
+  members ConversationMember[]
+  messages Message[]
+
+  @@index([createdById])
+  @@index([assignedToId,status])
+  @@index([status, createdAt])
+  
+}
+
+model ConversationMember{
+  id String @id @default(uuid())
+  conversationId String
+  userId String
+  role MemberRole @default(CUSTOMER)
+  joinedAt DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId],references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId],references: [id],onDelete: Cascade)
+  @@unique([conversationId,userId])
+  @@index([userId])
+}
+
+model Message{
+  id String @id @default(uuid())
+  conversationId String 
+  senderId String
+  content String
+  messageType MessageType @default(TEXT)
+  isEdited Boolean @default(false)
+  editedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId],references: [id],onDelete: Cascade)
+  user User @relation(fields: [senderId],references: [id], onDelete:Cascade )
+  
+  attachments Attachment[]
+
+  messageReads MessageRead[]
+
+  @@unique([conversationId,senderId])
+  @@index([senderId])
+}
+
+model Attachment{
+  id String @id @default(uuid())
+  messageId String 
+  url String
+  fileName String
+  fileType String
+  FileSize Int
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@index([messageId])
+}
+
+model MessageRead{
+  id String @id @default(uuid())
+  messageId String 
+  userId String 
+  readAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId],references: [id],onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId])
+}
+
+model Session{
+  id String @id @default(uuid())
+  userId String
+  token String @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
