@@ -56,7 +56,15 @@ function rejectUpgrade(
 function sendEvent(socket: WebSocket, event: unknown) {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(event));
+    return true;
   }
+
+  console.warn("Cannot send event: WebSocket is not OPEN", {
+    readyState: socket.readyState,
+    event,
+  });
+
+  return false;
 }
 
 async function authenticateRequest(
@@ -111,6 +119,7 @@ server.on("upgrade", async (request, socket, head) => {
   const origin = request.headers.origin;
 
   if (!origin || !allowedOrigins.has(origin)) {
+    console.warn("WebSocket upgrade rejected: invalid origin", origin);
     rejectUpgrade(socket, 403, "Forbidden");
     return;
   }
@@ -118,6 +127,7 @@ server.on("upgrade", async (request, socket, head) => {
   const cookie = request.headers.cookie;
 
   if (!cookie) {
+    console.warn("WebSocket upgrade rejected: missing cookie");
     rejectUpgrade(socket, 401, "Unauthorized");
     return;
   }
@@ -133,6 +143,7 @@ server.on("upgrade", async (request, socket, head) => {
   }
 
   if (!user) {
+    console.warn("WebSocket upgrade rejected: unauthenticated user");
     rejectUpgrade(socket, 401, "Unauthorized");
     return;
   }
@@ -155,7 +166,10 @@ wss.on("connection", (socket) => {
 
   connectionManager.add(user.id, socket);
 
-  console.log(`Authenticated ${user.role} connected: ${user.id}`);
+  console.log("WebSocket connected:", {
+    userId: user.id,
+    role: user.role,
+  });
 
   sendEvent(socket, {
     type: "CONNECTED",
@@ -164,11 +178,15 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("message", async (data) => {
+    console.log("RAW WS MESSAGE:", data.toString());
+
     let payload: unknown;
 
     try {
       payload = JSON.parse(data.toString());
     } catch {
+      console.warn("Invalid JSON received from:", user.id);
+
       sendEvent(socket, {
         type: "ERROR",
         message: "Invalid JSON",
@@ -179,6 +197,8 @@ wss.on("connection", (socket) => {
     const result = sendMessageSchema.safeParse(payload);
 
     if (!result.success) {
+      console.warn("Invalid WebSocket event:", result.error.flatten());
+
       sendEvent(socket, {
         type: "ERROR",
         message: "Invalid message event",
@@ -187,6 +207,12 @@ wss.on("connection", (socket) => {
     }
 
     const { conversationId, content } = result.data;
+
+    console.log("Validated SEND_MESSAGE:", {
+      userId: user.id,
+      role: user.role,
+      conversationId,
+    });
 
     try {
       const conversation = await prisma.conversation.findFirst({
@@ -207,6 +233,12 @@ wss.on("connection", (socket) => {
       });
 
       if (!conversation) {
+        console.warn("Conversation not found or access denied:", {
+          userId: user.id,
+          role: user.role,
+          conversationId,
+        });
+
         sendEvent(socket, {
           type: "ERROR",
           message: "Conversation not found or access denied",
@@ -231,6 +263,12 @@ wss.on("connection", (socket) => {
         },
       });
 
+      console.log("Message saved:", {
+        messageId: message.id,
+        conversationId: message.conversationId,
+        senderId: message.senderId,
+      });
+
       // Confirm persistence to the sending connection.
       sendEvent(socket, {
         type: "MESSAGE_SENT",
@@ -240,6 +278,11 @@ wss.on("connection", (socket) => {
       });
 
       // Deliver the persisted message to the customer.
+      console.log("Broadcasting NEW_MESSAGE to customer:", {
+        customerId: conversation.createdById,
+        messageId: message.id,
+      });
+
       connectionManager.sendToUser(conversation.createdById, {
         type: "NEW_MESSAGE",
         message,
@@ -247,10 +290,17 @@ wss.on("connection", (socket) => {
 
       // Deliver to the assigned agent, if one exists.
       if (conversation.assignedToId) {
+        console.log("Broadcasting NEW_MESSAGE to agent:", {
+          agentId: conversation.assignedToId,
+          messageId: message.id,
+        });
+
         connectionManager.sendToUser(conversation.assignedToId, {
           type: "NEW_MESSAGE",
           message,
         });
+      } else {
+        console.warn("No agent assigned to conversation:", conversation.id);
       }
     } catch (error) {
       console.error("WebSocket message failed:", error);
@@ -262,9 +312,15 @@ wss.on("connection", (socket) => {
     }
   });
 
-  socket.on("close", () => {
+  socket.on("close", (code, reason) => {
     connectionManager.remove(user.id, socket);
-    console.log(`User disconnected: ${user.id}`);
+
+    console.log("WebSocket disconnected:", {
+      userId: user.id,
+      role: user.role,
+      code,
+      reason: reason.toString(),
+    });
   });
 
   socket.on("error", (error) => {

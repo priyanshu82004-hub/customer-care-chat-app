@@ -1,9 +1,9 @@
-
 "use client";
 
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -49,6 +49,13 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
+  const socketRef = useRef<WebSocket | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeId) ??
@@ -117,6 +124,140 @@ export default function Home() {
     void loadConversations();
   }, [loadConversations]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+
+    if (!wsUrl) {
+      setError("WebSocket URL is not configured. Messages will use the REST API.");
+      return;
+    }
+
+    let socket: WebSocket;
+
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch {
+      setWsConnected(false);
+      setError("Unable to initialize real-time messaging. Messages will use the REST API.");
+      return;
+    }
+
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      setWsConnected(true);
+    };
+
+    socket.onmessage = (event) => {
+      let payload: {
+        type?: string;
+        conversationId?: string;
+        messageId?: string;
+        message?: Partial<ChatMessage> & { createdAt?: string };
+        error?: string;
+      };
+
+      try {
+        payload = JSON.parse(String(event.data));
+      } catch {
+        setError("Received an invalid real-time event.");
+        return;
+      }
+
+      if (payload.type === "CONNECTED") {
+        setWsConnected(true);
+        return;
+      }
+
+      if (payload.type === "MESSAGE_SENT") {
+        setSending(false);
+        setDraft("");
+        return;
+      }
+
+      if (payload.type === "ERROR") {
+        setSending(false);
+        setError(payload.error ?? "Unable to send the real-time message.");
+        return;
+      }
+
+      if (payload.type === "NEW_MESSAGE" && payload.message) {
+        const rawMessage = payload.message;
+
+        if (
+          typeof rawMessage.id !== "string" ||
+          typeof rawMessage.conversationId !== "string" ||
+          typeof rawMessage.senderId !== "string" ||
+          typeof rawMessage.content !== "string" ||
+          typeof rawMessage.createdAt !== "string"
+        ) {
+          return;
+        }
+
+        const incomingMessage: ChatMessage = {
+          id: rawMessage.id,
+          conversationId: rawMessage.conversationId,
+          senderId: rawMessage.senderId,
+          content: rawMessage.content,
+          messageType: rawMessage.messageType ?? "TEXT",
+          isEdited: rawMessage.isEdited ?? false,
+          createdAt: rawMessage.createdAt,
+          updatedAt: rawMessage.updatedAt ?? rawMessage.createdAt,
+        };
+
+        if (activeIdRef.current === incomingMessage.conversationId) {
+          setMessages((previous) => {
+            if (previous.some((message) => message.id === incomingMessage.id)) {
+              return previous;
+            }
+
+            return [...previous, incomingMessage];
+          });
+        }
+
+        setConversations((previous) =>
+          previous.map((conversation) =>
+            conversation.id === incomingMessage.conversationId
+              ? {
+                  ...conversation,
+                  updatedAt: incomingMessage.createdAt,
+                  _count: {
+                    messages: conversation._count.messages + 1,
+                  },
+                }
+              : conversation
+          )
+        );
+      }
+    };
+
+    socket.onerror = () => {
+      setWsConnected(false);
+    };
+
+    socket.onclose = () => {
+      setWsConnected(false);
+      if (socketRef.current === socket) {
+        socketRef.current = null;
+      }
+    };
+
+    return () => {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+      if (socketRef.current === socket) {
+        socketRef.current = null;
+      }
+    };
+  }, [user?.id]);
+
   const loadMessages = useCallback(async (conversationId: string) => {
     setLoadingMessages(true);
     setError("");
@@ -140,7 +281,30 @@ export default function Home() {
         );
       }
 
-      setMessages(data.messages ?? []);
+      setMessages((previous) => {
+  const history: ChatMessage[] = data.messages ?? [];
+
+  // Keep messages received over WebSocket while history was loading.
+  const currentConversationMessages = previous.filter(
+    (message) => message.conversationId === conversationId
+  );
+
+  const uniqueMessages = new Map<string, ChatMessage>();
+
+  for (const message of history) {
+    uniqueMessages.set(message.id, message);
+  }
+
+  for (const message of currentConversationMessages) {
+    uniqueMessages.set(message.id, message);
+  }
+
+  return Array.from(uniqueMessages.values()).sort(
+    (a, b) =>
+      new Date(a.createdAt).getTime() -
+      new Date(b.createdAt).getTime()
+  );
+});
     } catch (err) {
       setMessages([]);
 
@@ -172,6 +336,25 @@ export default function Home() {
     setSending(true);
     setError("");
 
+    const socket = socketRef.current;
+
+    if (socket?.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "SEND_MESSAGE",
+            conversationId: activeId,
+            content,
+          })
+        );
+      } catch {
+        setSending(false);
+        setError("Unable to send the real-time message. Please try again.");
+      }
+      return;
+    }
+
+    // Keep the existing REST API as a fallback when WebSocket is unavailable.
     try {
       const response = await fetch(
         `/api/conversations/${activeId}/messages`,
@@ -423,6 +606,9 @@ export default function Home() {
               {activeConversation
                 ? `Status: ${activeConversation.status}`
                 : "Choose a conversation or start a new one"}
+            </p>
+            <p className={`mt-1 text-xs ${wsConnected ? "text-emerald-600" : "text-amber-600"}`}>
+              {wsConnected ? "Real-time connected" : "Real-time disconnected · REST fallback"}
             </p>
           </div>
 
